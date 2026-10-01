@@ -660,7 +660,8 @@ func TestHandleReplaceUser(t *testing.T) {
 }
 
 // TestHandleReplaceUserErrors tests PUT error mapping: a typed SCIMError
-// keeps its status, an opaque plugin error maps to 404.
+// keeps its status; an opaque plugin error maps to 500 (existence was already
+// verified by the preceding GetUser, so an untyped failure is a backend error).
 func TestHandleReplaceUserErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -668,7 +669,7 @@ func TestHandleReplaceUserErrors(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "typed SCIMError passes through", err: ErrUniqueness("conflict"), wantStatus: http.StatusConflict},
-		{name: "opaque error maps to 404", err: fmt.Errorf("backend exploded"), wantStatus: http.StatusNotFound},
+		{name: "opaque error maps to 500", err: fmt.Errorf("backend exploded"), wantStatus: http.StatusInternalServerError},
 	}
 
 	for _, tt := range tests {
@@ -704,6 +705,72 @@ func (f *failingReplacePlugin) ReplaceUser(ctx context.Context, id string, user 
 
 func (f *failingReplacePlugin) ReplaceGroup(ctx context.Context, id string, group *Group) (*Group, error) {
 	return nil, f.err
+}
+
+// legacyPlugin exposes mockPlugin as a bare PluginGetter WITHOUT the optional
+// replacer interfaces, so the server's legacy delete+create fallback can be
+// exercised.
+type legacyPlugin struct {
+	m *mockPlugin
+}
+
+func (l *legacyPlugin) GetUsers(ctx context.Context, params QueryParams) (*ListResponse[*User], error) {
+	return l.m.GetUsers(ctx, params)
+}
+func (l *legacyPlugin) CreateUser(ctx context.Context, user *User) (*User, error) {
+	return l.m.CreateUser(ctx, user)
+}
+func (l *legacyPlugin) GetUser(ctx context.Context, id string, attributes []string) (*User, error) {
+	return l.m.GetUser(ctx, id, attributes)
+}
+func (l *legacyPlugin) ModifyUser(ctx context.Context, id string, patch *PatchOp) error {
+	return l.m.ModifyUser(ctx, id, patch)
+}
+func (l *legacyPlugin) DeleteUser(ctx context.Context, id string) error {
+	return l.m.DeleteUser(ctx, id)
+}
+func (l *legacyPlugin) GetGroups(ctx context.Context, params QueryParams) (*ListResponse[*Group], error) {
+	return l.m.GetGroups(ctx, params)
+}
+func (l *legacyPlugin) CreateGroup(ctx context.Context, group *Group) (*Group, error) {
+	return l.m.CreateGroup(ctx, group)
+}
+func (l *legacyPlugin) GetGroup(ctx context.Context, id string, attributes []string) (*Group, error) {
+	return l.m.GetGroup(ctx, id, attributes)
+}
+func (l *legacyPlugin) ModifyGroup(ctx context.Context, id string, patch *PatchOp) error {
+	return l.m.ModifyGroup(ctx, id, patch)
+}
+func (l *legacyPlugin) DeleteGroup(ctx context.Context, id string) error {
+	return l.m.DeleteGroup(ctx, id)
+}
+
+// TestHandleReplaceUserLegacyFallback verifies a PluginGetter without the
+// optional replacer interfaces still serves PUT via delete+create.
+func TestHandleReplaceUserLegacyFallback(t *testing.T) {
+	mock := newMockPlugin()
+	mock.CreateUser(context.Background(), &User{ID: "user1", UserName: "testuser"})
+	srv := NewServer("http://localhost:8080", &mockPluginManager{plugin: &legacyPlugin{m: mock}})
+
+	body, _ := json.Marshal(&User{UserName: "updated"})
+	req := httptest.NewRequest("PUT", "/test/Users/user1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/scim+json")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if mock.replaceUserCalls != 0 {
+		t.Errorf("replaceUserCalls = %d, want 0 (legacy path must not use the replacer)", mock.replaceUserCalls)
+	}
+	if mock.deleteUserCalls != 1 {
+		t.Errorf("deleteUserCalls = %d, want 1", mock.deleteUserCalls)
+	}
+	if mock.createUserCalls != 2 {
+		t.Errorf("createUserCalls = %d, want 2 (setup + recreate)", mock.createUserCalls)
+	}
 }
 
 // TestHandleReplaceGroup tests PUT /Groups/{id} endpoint

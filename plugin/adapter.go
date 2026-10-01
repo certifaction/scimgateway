@@ -49,10 +49,11 @@ func (a *Adapter) DeleteUser(ctx context.Context, id string) error {
 	return a.plugin.DeleteUser(ctx, id)
 }
 
-// ReplaceUser implements scim.PluginGetter. Plugins that implement the
-// optional UserReplacer interface get true in-place replace semantics;
+// ReplaceUser implements scim.UserReplacer. Plugins that implement the
+// optional plugin.UserReplacer interface get true in-place replace semantics;
 // for the rest the adapter falls back to the legacy delete-and-recreate
-// strategy so existing plugins keep their observable behavior.
+// replacement strategy, so existing plugins stay source-compatible without
+// code changes.
 func (a *Adapter) ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error) {
 	if r, ok := a.plugin.(UserReplacer); ok {
 		return r.ReplaceUser(ctx, id, user)
@@ -96,7 +97,7 @@ func (a *Adapter) DeleteGroup(ctx context.Context, id string) error {
 	return a.plugin.DeleteGroup(ctx, id)
 }
 
-// ReplaceGroup implements scim.PluginGetter. See ReplaceUser for the
+// ReplaceGroup implements scim.GroupReplacer. See ReplaceUser for the
 // delegation-vs-fallback behavior.
 func (a *Adapter) ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error) {
 	if r, ok := a.plugin.(GroupReplacer); ok {
