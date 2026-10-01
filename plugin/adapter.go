@@ -49,6 +49,20 @@ func (a *Adapter) DeleteUser(ctx context.Context, id string) error {
 	return a.plugin.DeleteUser(ctx, id)
 }
 
+// ReplaceUser implements scim.PluginGetter. Plugins that implement the
+// optional UserReplacer interface get true in-place replace semantics;
+// for the rest the adapter falls back to the legacy delete-and-recreate
+// strategy so existing plugins keep their observable behavior.
+func (a *Adapter) ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error) {
+	if r, ok := a.plugin.(UserReplacer); ok {
+		return r.ReplaceUser(ctx, id, user)
+	}
+	if err := a.plugin.DeleteUser(ctx, id); err != nil {
+		return nil, err
+	}
+	return a.plugin.CreateUser(ctx, user)
+}
+
 // GetGroups implements scim.PluginGetter
 // The adapter applies SCIM protocol operations (filtering, pagination, attribute selection)
 func (a *Adapter) GetGroups(ctx context.Context, params scim.QueryParams) (*scim.ListResponse[*scim.Group], error) {
@@ -80,6 +94,18 @@ func (a *Adapter) ModifyGroup(ctx context.Context, id string, patch *scim.PatchO
 // DeleteGroup implements scim.PluginGetter
 func (a *Adapter) DeleteGroup(ctx context.Context, id string) error {
 	return a.plugin.DeleteGroup(ctx, id)
+}
+
+// ReplaceGroup implements scim.PluginGetter. See ReplaceUser for the
+// delegation-vs-fallback behavior.
+func (a *Adapter) ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error) {
+	if r, ok := a.plugin.(GroupReplacer); ok {
+		return r.ReplaceGroup(ctx, id, group)
+	}
+	if err := a.plugin.DeleteGroup(ctx, id); err != nil {
+		return nil, err
+	}
+	return a.plugin.CreateGroup(ctx, group)
 }
 
 // AdaptedManager wraps Manager to provide adapted plugins

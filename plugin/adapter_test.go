@@ -230,6 +230,122 @@ func TestAdapterDeleteGroup(t *testing.T) {
 	}
 }
 
+// trackingPlugin embeds contextAwarePlugin and counts delete/create calls so
+// the fallback path can be asserted.
+type trackingPlugin struct {
+	contextAwarePlugin
+	deleteUserCalls, createUserCalls   int
+	deleteGroupCalls, createGroupCalls int
+}
+
+func (p *trackingPlugin) DeleteUser(ctx context.Context, id string) error {
+	p.deleteUserCalls++
+	return nil
+}
+
+func (p *trackingPlugin) CreateUser(ctx context.Context, user *scim.User) (*scim.User, error) {
+	p.createUserCalls++
+	return p.contextAwarePlugin.CreateUser(ctx, user)
+}
+
+func (p *trackingPlugin) DeleteGroup(ctx context.Context, id string) error {
+	p.deleteGroupCalls++
+	return nil
+}
+
+func (p *trackingPlugin) CreateGroup(ctx context.Context, group *scim.Group) (*scim.Group, error) {
+	p.createGroupCalls++
+	return p.contextAwarePlugin.CreateGroup(ctx, group)
+}
+
+// replacerPlugin adds the optional UserReplacer/GroupReplacer capabilities.
+type replacerPlugin struct {
+	trackingPlugin
+	replaceUserCalls, replaceGroupCalls int
+}
+
+func (p *replacerPlugin) ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error) {
+	p.replaceUserCalls++
+	user.ID = id
+	return user, nil
+}
+
+func (p *replacerPlugin) ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error) {
+	p.replaceGroupCalls++
+	group.ID = id
+	return group, nil
+}
+
+func TestAdapterReplaceUserDelegates(t *testing.T) {
+	p := &replacerPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceUser(testCtx, "u1", &scim.User{UserName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceUser() error = %v", err)
+	}
+	if replaced.ID != "u1" {
+		t.Errorf("Expected ID 'u1', got '%s'", replaced.ID)
+	}
+	if p.replaceUserCalls != 1 {
+		t.Errorf("replaceUserCalls = %d, want 1", p.replaceUserCalls)
+	}
+	if p.deleteUserCalls != 0 || p.createUserCalls != 0 {
+		t.Errorf("fallback used despite UserReplacer: delete=%d create=%d", p.deleteUserCalls, p.createUserCalls)
+	}
+}
+
+func TestAdapterReplaceUserFallsBack(t *testing.T) {
+	p := &trackingPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceUser(testCtx, "u1", &scim.User{UserName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceUser() error = %v", err)
+	}
+	if replaced == nil {
+		t.Fatal("ReplaceUser() returned nil user")
+	}
+	if p.deleteUserCalls != 1 || p.createUserCalls != 1 {
+		t.Errorf("legacy fallback must delete then create: delete=%d create=%d", p.deleteUserCalls, p.createUserCalls)
+	}
+}
+
+func TestAdapterReplaceGroupDelegates(t *testing.T) {
+	p := &replacerPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceGroup(testCtx, "g1", &scim.Group{DisplayName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceGroup() error = %v", err)
+	}
+	if replaced.ID != "g1" {
+		t.Errorf("Expected ID 'g1', got '%s'", replaced.ID)
+	}
+	if p.replaceGroupCalls != 1 {
+		t.Errorf("replaceGroupCalls = %d, want 1", p.replaceGroupCalls)
+	}
+	if p.deleteGroupCalls != 0 || p.createGroupCalls != 0 {
+		t.Errorf("fallback used despite GroupReplacer: delete=%d create=%d", p.deleteGroupCalls, p.createGroupCalls)
+	}
+}
+
+func TestAdapterReplaceGroupFallsBack(t *testing.T) {
+	p := &trackingPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceGroup(testCtx, "g1", &scim.Group{DisplayName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceGroup() error = %v", err)
+	}
+	if replaced == nil {
+		t.Fatal("ReplaceGroup() returned nil group")
+	}
+	if p.deleteGroupCalls != 1 || p.createGroupCalls != 1 {
+		t.Errorf("legacy fallback must delete then create: delete=%d create=%d", p.deleteGroupCalls, p.createGroupCalls)
+	}
+}
+
 func TestNewAdaptedManager(t *testing.T) {
 	manager := NewManager()
 	p := &contextAwarePlugin{name: "test"}

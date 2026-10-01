@@ -27,11 +27,17 @@ type PluginGetter interface {
 	GetUser(ctx context.Context, id string, attributes []string) (*User, error)
 	ModifyUser(ctx context.Context, id string, patch *PatchOp) error
 	DeleteUser(ctx context.Context, id string) error
+	// ReplaceUser handles PUT: replace the stored resource with the given
+	// representation, keeping the resource identity (id) stable.
+	ReplaceUser(ctx context.Context, id string, user *User) (*User, error)
 	GetGroups(ctx context.Context, params QueryParams) (*ListResponse[*Group], error)
 	CreateGroup(ctx context.Context, group *Group) (*Group, error)
 	GetGroup(ctx context.Context, id string, attributes []string) (*Group, error)
 	ModifyGroup(ctx context.Context, id string, patch *PatchOp) error
 	DeleteGroup(ctx context.Context, id string) error
+	// ReplaceGroup handles PUT: replace the stored resource with the given
+	// representation, keeping the resource identity (id) stable.
+	ReplaceGroup(ctx context.Context, id string, group *Group) (*Group, error)
 }
 
 // PluginManager defines the interface for managing plugins
@@ -568,15 +574,9 @@ func (s *Server) replaceUser(w http.ResponseWriter, r *http.Request, plugin Plug
 	// Ensure ID matches
 	user.ID = id
 
-	// Delete and recreate (simple replace strategy)
-	if err := plugin.DeleteUser(r.Context(), id); err != nil {
-		s.handlePluginError(w, err, http.StatusNotFound, "")
-		return
-	}
-
-	created, err := plugin.CreateUser(r.Context(), &user)
+	created, err := plugin.ReplaceUser(r.Context(), id, &user)
 	if err != nil {
-		s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+		s.handlePluginError(w, err, http.StatusNotFound, "")
 		return
 	}
 
@@ -874,15 +874,9 @@ func (s *Server) replaceGroup(w http.ResponseWriter, r *http.Request, plugin Plu
 	// Ensure ID matches
 	group.ID = id
 
-	// Delete and recreate (simple replace strategy)
-	if err := plugin.DeleteGroup(r.Context(), id); err != nil {
-		s.handlePluginError(w, err, http.StatusNotFound, "")
-		return
-	}
-
-	created, err := plugin.CreateGroup(r.Context(), &group)
+	created, err := plugin.ReplaceGroup(r.Context(), id, &group)
 	if err != nil {
-		s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+		s.handlePluginError(w, err, http.StatusNotFound, "")
 		return
 	}
 
