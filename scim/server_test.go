@@ -646,6 +646,131 @@ func TestHandleReplaceUser(t *testing.T) {
 	if resp.UserName != "updated" {
 		t.Errorf("userName = %s, want 'updated'", resp.UserName)
 	}
+
+	// PUT must go through ReplaceUser, never delete-and-recreate.
+	if plugin.replaceUserCalls != 1 {
+		t.Errorf("replaceUserCalls = %d, want 1", plugin.replaceUserCalls)
+	}
+	if plugin.deleteUserCalls != 0 {
+		t.Errorf("deleteUserCalls = %d, want 0 (delete-and-recreate is gone)", plugin.deleteUserCalls)
+	}
+	if plugin.createUserCalls != 1 {
+		t.Errorf("createUserCalls = %d, want 1 (only the test setup create)", plugin.createUserCalls)
+	}
+}
+
+// TestHandleReplaceUserErrors tests PUT error mapping: a typed SCIMError
+// keeps its status; an opaque plugin error maps to 500 (existence was already
+// verified by the preceding GetUser, so an untyped failure is a backend error).
+func TestHandleReplaceUserErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{name: "typed SCIMError passes through", err: ErrUniqueness("conflict"), wantStatus: http.StatusConflict},
+		{name: "opaque error maps to 500", err: fmt.Errorf("backend exploded"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := newMockPlugin()
+			plugin.CreateUser(context.Background(), &User{ID: "user1", UserName: "testuser"})
+			failing := &failingReplacePlugin{mockPlugin: plugin, err: tt.err}
+			srv := NewServer("http://localhost:8080", &mockPluginManager{plugin: failing})
+
+			body, _ := json.Marshal(&User{UserName: "updated"})
+			req := httptest.NewRequest("PUT", "/test/Users/user1", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/scim+json")
+			w := httptest.NewRecorder()
+
+			srv.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d, body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// failingReplacePlugin wraps mockPlugin to make Replace* fail with a fixed error.
+type failingReplacePlugin struct {
+	*mockPlugin
+	err error
+}
+
+func (f *failingReplacePlugin) ReplaceUser(ctx context.Context, id string, user *User) (*User, error) {
+	return nil, f.err
+}
+
+func (f *failingReplacePlugin) ReplaceGroup(ctx context.Context, id string, group *Group) (*Group, error) {
+	return nil, f.err
+}
+
+// legacyPlugin exposes mockPlugin as a bare PluginGetter WITHOUT the optional
+// replacer interfaces, so the server's legacy delete+create fallback can be
+// exercised.
+type legacyPlugin struct {
+	m *mockPlugin
+}
+
+func (l *legacyPlugin) GetUsers(ctx context.Context, params QueryParams) (*ListResponse[*User], error) {
+	return l.m.GetUsers(ctx, params)
+}
+func (l *legacyPlugin) CreateUser(ctx context.Context, user *User) (*User, error) {
+	return l.m.CreateUser(ctx, user)
+}
+func (l *legacyPlugin) GetUser(ctx context.Context, id string, attributes []string) (*User, error) {
+	return l.m.GetUser(ctx, id, attributes)
+}
+func (l *legacyPlugin) ModifyUser(ctx context.Context, id string, patch *PatchOp) error {
+	return l.m.ModifyUser(ctx, id, patch)
+}
+func (l *legacyPlugin) DeleteUser(ctx context.Context, id string) error {
+	return l.m.DeleteUser(ctx, id)
+}
+func (l *legacyPlugin) GetGroups(ctx context.Context, params QueryParams) (*ListResponse[*Group], error) {
+	return l.m.GetGroups(ctx, params)
+}
+func (l *legacyPlugin) CreateGroup(ctx context.Context, group *Group) (*Group, error) {
+	return l.m.CreateGroup(ctx, group)
+}
+func (l *legacyPlugin) GetGroup(ctx context.Context, id string, attributes []string) (*Group, error) {
+	return l.m.GetGroup(ctx, id, attributes)
+}
+func (l *legacyPlugin) ModifyGroup(ctx context.Context, id string, patch *PatchOp) error {
+	return l.m.ModifyGroup(ctx, id, patch)
+}
+func (l *legacyPlugin) DeleteGroup(ctx context.Context, id string) error {
+	return l.m.DeleteGroup(ctx, id)
+}
+
+// TestHandleReplaceUserLegacyFallback verifies a PluginGetter without the
+// optional replacer interfaces still serves PUT via delete+create.
+func TestHandleReplaceUserLegacyFallback(t *testing.T) {
+	mock := newMockPlugin()
+	mock.CreateUser(context.Background(), &User{ID: "user1", UserName: "testuser"})
+	srv := NewServer("http://localhost:8080", &mockPluginManager{plugin: &legacyPlugin{m: mock}})
+
+	body, _ := json.Marshal(&User{UserName: "updated"})
+	req := httptest.NewRequest("PUT", "/test/Users/user1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/scim+json")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if mock.replaceUserCalls != 0 {
+		t.Errorf("replaceUserCalls = %d, want 0 (legacy path must not use the replacer)", mock.replaceUserCalls)
+	}
+	if mock.deleteUserCalls != 1 {
+		t.Errorf("deleteUserCalls = %d, want 1", mock.deleteUserCalls)
+	}
+	if mock.createUserCalls != 2 {
+		t.Errorf("createUserCalls = %d, want 2 (setup + recreate)", mock.createUserCalls)
+	}
 }
 
 // TestHandleReplaceGroup tests PUT /Groups/{id} endpoint
@@ -686,6 +811,17 @@ func TestHandleReplaceGroup(t *testing.T) {
 
 	if resp.DisplayName != "updated" {
 		t.Errorf("displayName = %s, want 'updated'", resp.DisplayName)
+	}
+
+	// PUT must go through ReplaceGroup, never delete-and-recreate.
+	if plugin.replaceGroupCalls != 1 {
+		t.Errorf("replaceGroupCalls = %d, want 1", plugin.replaceGroupCalls)
+	}
+	if plugin.deleteGroupCalls != 0 {
+		t.Errorf("deleteGroupCalls = %d, want 0 (delete-and-recreate is gone)", plugin.deleteGroupCalls)
+	}
+	if plugin.createGroupCalls != 1 {
+		t.Errorf("createGroupCalls = %d, want 1 (only the test setup create)", plugin.createGroupCalls)
 	}
 }
 

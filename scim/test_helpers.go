@@ -13,6 +13,14 @@ type mockPlugin struct {
 	users  map[string]*User
 	groups map[string]*Group
 	mu     sync.RWMutex
+
+	// Call counters so tests can assert which strategy the server used.
+	replaceUserCalls  int
+	replaceGroupCalls int
+	deleteUserCalls   int
+	deleteGroupCalls  int
+	createUserCalls   int
+	createGroupCalls  int
 }
 
 func newMockPlugin() *mockPlugin {
@@ -51,6 +59,7 @@ func (m *mockPlugin) CreateUser(ctx context.Context, user *User) (*User, error) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.createUserCalls++
 	if user.ID == "" {
 		user.ID = uuid.New().String()
 	}
@@ -90,11 +99,28 @@ func (m *mockPlugin) DeleteUser(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.deleteUserCalls++
 	if _, ok := m.users[id]; !ok {
 		return fmt.Errorf("user not found")
 	}
 	delete(m.users, id)
 	return nil
+}
+
+func (m *mockPlugin) ReplaceUser(ctx context.Context, id string, user *User) (*User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.replaceUserCalls++
+	if _, ok := m.users[id]; !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	user.ID = id
+	if len(user.Schemas) == 0 {
+		user.Schemas = []string{SchemaUser}
+	}
+	m.users[id] = user
+	return user, nil
 }
 
 func (m *mockPlugin) GetGroups(ctx context.Context, params QueryParams) (*ListResponse[*Group], error) {
@@ -126,6 +152,7 @@ func (m *mockPlugin) CreateGroup(ctx context.Context, group *Group) (*Group, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.createGroupCalls++
 	if group.ID == "" {
 		group.ID = uuid.New().String()
 	}
@@ -165,11 +192,28 @@ func (m *mockPlugin) DeleteGroup(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.deleteGroupCalls++
 	if _, ok := m.groups[id]; !ok {
 		return fmt.Errorf("group not found")
 	}
 	delete(m.groups, id)
 	return nil
+}
+
+func (m *mockPlugin) ReplaceGroup(ctx context.Context, id string, group *Group) (*Group, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.replaceGroupCalls++
+	if _, ok := m.groups[id]; !ok {
+		return nil, fmt.Errorf("group not found")
+	}
+	group.ID = id
+	if len(group.Schemas) == 0 {
+		group.Schemas = []string{SchemaGroup}
+	}
+	m.groups[id] = group
+	return group, nil
 }
 
 // mockPluginManager is a mock plugin manager for testing

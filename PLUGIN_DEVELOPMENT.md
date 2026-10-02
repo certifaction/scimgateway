@@ -146,6 +146,30 @@ type Plugin interface {
 }
 ```
 
+### Optional capability interfaces: in-place replace (PUT)
+
+By default, `PUT /Users/{id}` and `PUT /Groups/{id}` are served by a legacy
+delete-and-recreate fallback in the adapter. That is fine for stateless
+backends, but on backends where resources carry identity (stable IDs,
+credentials, group memberships) it is destructive. Implement the optional
+interfaces from `plugin/plugin.go` to get true in-place replace semantics:
+
+```go
+type UserReplacer interface {
+    // ReplaceUser replaces the user's representation wholesale while keeping
+    // its identity (id) stable. The payload is already validated and user.ID
+    // is set to the path id. Returns the stored representation.
+    ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error)
+}
+
+type GroupReplacer interface {
+    ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error)
+}
+```
+
+When a plugin implements these, the adapter delegates PUT to them instead of
+deleting and recreating. Strongly recommended for identity-carrying backends.
+
 ### Method Parameters Explained
 
 - **`ctx context.Context`**: Request context for cancellation, timeouts, and tracing. **Always respect context cancellation**.

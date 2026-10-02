@@ -134,6 +134,31 @@ type Plugin interface {
 	DeleteGroup(ctx context.Context, id string) error
 }
 
+// UserReplacer is an optional capability interface for plugins that can
+// replace a user in place (SCIM PUT semantics).
+//
+// When a plugin implements UserReplacer, PUT /Users/{id} delegates to
+// ReplaceUser and the backend resource keeps its identity. When it does not,
+// the adapter falls back to the legacy delete-and-recreate strategy — which
+// loses backend-managed state (stable IDs, credentials, memberships) on
+// backends where resources carry identity, so implementing this interface is
+// strongly recommended for such backends.
+type UserReplacer interface {
+	// ReplaceUser replaces the user's representation wholesale while keeping
+	// its identity (id) stable. The server has already validated the payload
+	// and set user.ID to the path id. Returns the stored representation.
+	ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error)
+}
+
+// GroupReplacer is an optional capability interface for plugins that can
+// replace a group in place (SCIM PUT semantics). See UserReplacer.
+type GroupReplacer interface {
+	// ReplaceGroup replaces the group's representation wholesale while keeping
+	// its identity (id) stable. The server has already validated the payload
+	// and set group.ID to the path id. Returns the stored representation.
+	ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error)
+}
+
 // Manager manages multiple plugins and their authentication.
 //
 // Thread Safety:
