@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/marcelom97/scimgateway/scim"
 )
@@ -52,16 +53,33 @@ func (a *Adapter) DeleteUser(ctx context.Context, id string) error {
 // ReplaceUser implements scim.UserReplacer. Plugins that implement the
 // optional plugin.UserReplacer interface get true in-place replace semantics;
 // for the rest the adapter falls back to the legacy delete-and-recreate
-// replacement strategy, so existing plugins stay source-compatible without
-// code changes.
+// replacement strategy, so existing plugins keep working without code
+// changes. Opaque fallback errors are wrapped with the status each phase
+// produced before the replacer existed (delete → 404, create → 500), so
+// adapter-wrapped legacy plugins also keep their observable PUT error
+// behavior; typed SCIMErrors pass through untouched either way.
 func (a *Adapter) ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error) {
 	if r, ok := a.plugin.(UserReplacer); ok {
 		return r.ReplaceUser(ctx, id, user)
 	}
 	if err := a.plugin.DeleteUser(ctx, id); err != nil {
-		return nil, err
+		return nil, legacyPhaseError(err, http.StatusNotFound, "")
 	}
-	return a.plugin.CreateUser(ctx, user)
+	created, err := a.plugin.CreateUser(ctx, user)
+	if err != nil {
+		return nil, legacyPhaseError(err, http.StatusInternalServerError, "internalError")
+	}
+	return created, nil
+}
+
+// legacyPhaseError preserves the pre-replacer status mapping of the
+// delete+create fallback: typed SCIMErrors keep their status, anything else
+// is wrapped with the status the failing phase historically produced.
+func legacyPhaseError(err error, status int, scimType string) error {
+	if scimErr, ok := err.(*scim.SCIMError); ok {
+		return scimErr
+	}
+	return scim.NewSCIMError(status, err.Error(), scimType)
 }
 
 // GetGroups implements scim.PluginGetter
@@ -98,15 +116,19 @@ func (a *Adapter) DeleteGroup(ctx context.Context, id string) error {
 }
 
 // ReplaceGroup implements scim.GroupReplacer. See ReplaceUser for the
-// delegation-vs-fallback behavior.
+// delegation-vs-fallback behavior and the phase-specific error mapping.
 func (a *Adapter) ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error) {
 	if r, ok := a.plugin.(GroupReplacer); ok {
 		return r.ReplaceGroup(ctx, id, group)
 	}
 	if err := a.plugin.DeleteGroup(ctx, id); err != nil {
-		return nil, err
+		return nil, legacyPhaseError(err, http.StatusNotFound, "")
 	}
-	return a.plugin.CreateGroup(ctx, group)
+	created, err := a.plugin.CreateGroup(ctx, group)
+	if err != nil {
+		return nil, legacyPhaseError(err, http.StatusInternalServerError, "internalError")
+	}
+	return created, nil
 }
 
 // AdaptedManager wraps Manager to provide adapted plugins
