@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -227,6 +228,214 @@ func TestAdapterDeleteGroup(t *testing.T) {
 	err := adapter.DeleteGroup(testCtx, testID)
 	if err != nil {
 		t.Fatalf("DeleteGroup() error = %v", err)
+	}
+}
+
+// trackingPlugin embeds contextAwarePlugin and counts delete/create calls so
+// the fallback path can be asserted.
+type trackingPlugin struct {
+	contextAwarePlugin
+	deleteUserCalls, createUserCalls   int
+	deleteGroupCalls, createGroupCalls int
+}
+
+func (p *trackingPlugin) DeleteUser(ctx context.Context, id string) error {
+	p.deleteUserCalls++
+	return nil
+}
+
+func (p *trackingPlugin) CreateUser(ctx context.Context, user *scim.User) (*scim.User, error) {
+	p.createUserCalls++
+	return p.contextAwarePlugin.CreateUser(ctx, user)
+}
+
+func (p *trackingPlugin) DeleteGroup(ctx context.Context, id string) error {
+	p.deleteGroupCalls++
+	return nil
+}
+
+func (p *trackingPlugin) CreateGroup(ctx context.Context, group *scim.Group) (*scim.Group, error) {
+	p.createGroupCalls++
+	return p.contextAwarePlugin.CreateGroup(ctx, group)
+}
+
+// replacerPlugin adds the optional UserReplacer/GroupReplacer capabilities.
+type replacerPlugin struct {
+	trackingPlugin
+	replaceUserCalls, replaceGroupCalls int
+}
+
+func (p *replacerPlugin) ReplaceUser(ctx context.Context, id string, user *scim.User) (*scim.User, error) {
+	p.replaceUserCalls++
+	user.ID = id
+	return user, nil
+}
+
+func (p *replacerPlugin) ReplaceGroup(ctx context.Context, id string, group *scim.Group) (*scim.Group, error) {
+	p.replaceGroupCalls++
+	group.ID = id
+	return group, nil
+}
+
+func TestAdapterReplaceUserDelegates(t *testing.T) {
+	p := &replacerPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceUser(testCtx, "u1", &scim.User{UserName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceUser() error = %v", err)
+	}
+	if replaced.ID != "u1" {
+		t.Errorf("Expected ID 'u1', got '%s'", replaced.ID)
+	}
+	if p.replaceUserCalls != 1 {
+		t.Errorf("replaceUserCalls = %d, want 1", p.replaceUserCalls)
+	}
+	if p.deleteUserCalls != 0 || p.createUserCalls != 0 {
+		t.Errorf("fallback used despite UserReplacer: delete=%d create=%d", p.deleteUserCalls, p.createUserCalls)
+	}
+}
+
+func TestAdapterReplaceUserFallsBack(t *testing.T) {
+	p := &trackingPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceUser(testCtx, "u1", &scim.User{UserName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceUser() error = %v", err)
+	}
+	if replaced == nil {
+		t.Fatal("ReplaceUser() returned nil user")
+	}
+	if p.deleteUserCalls != 1 || p.createUserCalls != 1 {
+		t.Errorf("legacy fallback must delete then create: delete=%d create=%d", p.deleteUserCalls, p.createUserCalls)
+	}
+}
+
+func TestAdapterReplaceGroupDelegates(t *testing.T) {
+	p := &replacerPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceGroup(testCtx, "g1", &scim.Group{DisplayName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceGroup() error = %v", err)
+	}
+	if replaced.ID != "g1" {
+		t.Errorf("Expected ID 'g1', got '%s'", replaced.ID)
+	}
+	if p.replaceGroupCalls != 1 {
+		t.Errorf("replaceGroupCalls = %d, want 1", p.replaceGroupCalls)
+	}
+	if p.deleteGroupCalls != 0 || p.createGroupCalls != 0 {
+		t.Errorf("fallback used despite GroupReplacer: delete=%d create=%d", p.deleteGroupCalls, p.createGroupCalls)
+	}
+}
+
+func TestAdapterReplaceGroupFallsBack(t *testing.T) {
+	p := &trackingPlugin{}
+	adapter := NewAdapter(p)
+
+	replaced, err := adapter.ReplaceGroup(testCtx, "g1", &scim.Group{DisplayName: "updated"})
+	if err != nil {
+		t.Fatalf("ReplaceGroup() error = %v", err)
+	}
+	if replaced == nil {
+		t.Fatal("ReplaceGroup() returned nil group")
+	}
+	if p.deleteGroupCalls != 1 || p.createGroupCalls != 1 {
+		t.Errorf("legacy fallback must delete then create: delete=%d create=%d", p.deleteGroupCalls, p.createGroupCalls)
+	}
+}
+
+// phaseFailingPlugin makes the fallback's delete or create phase fail.
+type phaseFailingPlugin struct {
+	trackingPlugin
+	deleteErr error
+	createErr error
+}
+
+func (p *phaseFailingPlugin) DeleteUser(ctx context.Context, id string) error {
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
+	return p.trackingPlugin.DeleteUser(ctx, id)
+}
+
+func (p *phaseFailingPlugin) CreateUser(ctx context.Context, user *scim.User) (*scim.User, error) {
+	if p.createErr != nil {
+		return nil, p.createErr
+	}
+	return p.trackingPlugin.CreateUser(ctx, user)
+}
+
+func (p *phaseFailingPlugin) DeleteGroup(ctx context.Context, id string) error {
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
+	return p.trackingPlugin.DeleteGroup(ctx, id)
+}
+
+func (p *phaseFailingPlugin) CreateGroup(ctx context.Context, group *scim.Group) (*scim.Group, error) {
+	if p.createErr != nil {
+		return nil, p.createErr
+	}
+	return p.trackingPlugin.CreateGroup(ctx, group)
+}
+
+// TestAdapterReplaceFallbackErrorMapping pins the legacy phase-specific
+// statuses: opaque delete failures stay 404, opaque create failures stay 500,
+// typed SCIMErrors keep their status.
+func TestAdapterReplaceFallbackErrorMapping(t *testing.T) {
+	typedErr := scim.ErrUniqueness("conflict")
+	tests := []struct {
+		name         string
+		deleteErr    error
+		createErr    error
+		wantStatus   int
+		wantScimType string
+	}{
+		{name: "opaque delete failure maps to 404", deleteErr: errFake, wantStatus: 404, wantScimType: ""},
+		{name: "opaque create failure maps to 500", createErr: errFake, wantStatus: 500, wantScimType: "internalError"},
+		{name: "typed delete error keeps its status", deleteErr: typedErr, wantStatus: typedErr.Status, wantScimType: typedErr.ScimType},
+		{name: "typed create error keeps its status", createErr: typedErr, wantStatus: typedErr.Status, wantScimType: typedErr.ScimType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" (user)", func(t *testing.T) {
+			p := &phaseFailingPlugin{deleteErr: tt.deleteErr, createErr: tt.createErr}
+			adapter := NewAdapter(p)
+
+			_, err := adapter.ReplaceUser(testCtx, "u1", &scim.User{UserName: "x"})
+
+			assertSCIMError(t, err, tt.wantStatus, tt.wantScimType)
+		})
+		t.Run(tt.name+" (group)", func(t *testing.T) {
+			p := &phaseFailingPlugin{deleteErr: tt.deleteErr, createErr: tt.createErr}
+			adapter := NewAdapter(p)
+
+			_, err := adapter.ReplaceGroup(testCtx, "g1", &scim.Group{DisplayName: "x"})
+
+			assertSCIMError(t, err, tt.wantStatus, tt.wantScimType)
+		})
+	}
+}
+
+var errFake = fmt.Errorf("backend exploded")
+
+func assertSCIMError(t *testing.T, err error, wantStatus int, wantScimType string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	scimErr, ok := err.(*scim.SCIMError)
+	if !ok {
+		t.Fatalf("want *scim.SCIMError, got %T: %v", err, err)
+	}
+	if scimErr.Status != wantStatus {
+		t.Errorf("status = %d, want %d", scimErr.Status, wantStatus)
+	}
+	if scimErr.ScimType != wantScimType {
+		t.Errorf("scimType = %q, want %q", scimErr.ScimType, wantScimType)
 	}
 }
 

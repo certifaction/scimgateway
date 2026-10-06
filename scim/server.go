@@ -34,6 +34,20 @@ type PluginGetter interface {
 	DeleteGroup(ctx context.Context, id string) error
 }
 
+// UserReplacer is an optional capability a PluginGetter can implement to serve
+// PUT /Users/{id} as a true in-place replace, keeping the resource identity
+// (id) stable. Without it the server falls back to the legacy
+// delete-and-recreate strategy. Kept separate from PluginGetter so existing
+// implementations stay source-compatible.
+type UserReplacer interface {
+	ReplaceUser(ctx context.Context, id string, user *User) (*User, error)
+}
+
+// GroupReplacer is the group counterpart of UserReplacer for PUT /Groups/{id}.
+type GroupReplacer interface {
+	ReplaceGroup(ctx context.Context, id string, group *Group) (*Group, error)
+}
+
 // PluginManager defines the interface for managing plugins
 type PluginManager interface {
 	Get(name string) (PluginGetter, bool)
@@ -568,16 +582,29 @@ func (s *Server) replaceUser(w http.ResponseWriter, r *http.Request, plugin Plug
 	// Ensure ID matches
 	user.ID = id
 
-	// Delete and recreate (simple replace strategy)
-	if err := plugin.DeleteUser(r.Context(), id); err != nil {
-		s.handlePluginError(w, err, http.StatusNotFound, "")
-		return
-	}
-
-	created, err := plugin.CreateUser(r.Context(), &user)
-	if err != nil {
-		s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
-		return
+	var created *User
+	if replacer, ok := plugin.(UserReplacer); ok {
+		// Opaque errors map to 500: the resource's existence was already
+		// verified by the GetUser above, so an untyped failure here is a
+		// backend error, not a missing resource. Typed SCIMErrors keep
+		// their status.
+		created, err = replacer.ReplaceUser(r.Context(), id, &user)
+		if err != nil {
+			s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+			return
+		}
+	} else {
+		// Legacy fallback: delete and recreate (simple replace strategy),
+		// preserving the pre-UserReplacer status mapping.
+		if err := plugin.DeleteUser(r.Context(), id); err != nil {
+			s.handlePluginError(w, err, http.StatusNotFound, "")
+			return
+		}
+		created, err = plugin.CreateUser(r.Context(), &user)
+		if err != nil {
+			s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+			return
+		}
 	}
 
 	// Generate ETag for the updated resource
@@ -874,16 +901,26 @@ func (s *Server) replaceGroup(w http.ResponseWriter, r *http.Request, plugin Plu
 	// Ensure ID matches
 	group.ID = id
 
-	// Delete and recreate (simple replace strategy)
-	if err := plugin.DeleteGroup(r.Context(), id); err != nil {
-		s.handlePluginError(w, err, http.StatusNotFound, "")
-		return
-	}
-
-	created, err := plugin.CreateGroup(r.Context(), &group)
-	if err != nil {
-		s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
-		return
+	var created *Group
+	if replacer, ok := plugin.(GroupReplacer); ok {
+		// Opaque errors map to 500 — see the user replace path.
+		created, err = replacer.ReplaceGroup(r.Context(), id, &group)
+		if err != nil {
+			s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+			return
+		}
+	} else {
+		// Legacy fallback: delete and recreate (simple replace strategy),
+		// preserving the pre-GroupReplacer status mapping.
+		if err := plugin.DeleteGroup(r.Context(), id); err != nil {
+			s.handlePluginError(w, err, http.StatusNotFound, "")
+			return
+		}
+		created, err = plugin.CreateGroup(r.Context(), &group)
+		if err != nil {
+			s.handlePluginError(w, err, http.StatusInternalServerError, "internalError")
+			return
+		}
 	}
 
 	// Generate ETag for the updated resource
