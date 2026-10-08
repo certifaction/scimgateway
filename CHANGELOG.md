@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0] - 2026-10-08
+
+
+## Changelog
+### Breaking Changes
+* feat!: remove unused Type and BaseEntity fields from PluginConfig (@)
+* feat!: remove unused baseEntity parameter from Plugin interface (@)
+### Features
+* feat(examples): add PostgreSQL plugin with query optimization (@)
+* feat: add GoReleaser integration for automated releases (@)
+* feat: add case-insensitive filtering for Microsoft SCIM compatibility (@)
+* feat: add custom authentication support with JWT example (@)
+* feat: add support for string bool (@)
+* feat: add thread safety and comprehensive documentation to plugin package (@)
+* feat: automate CHANGELOG.md updates on release (@)
+* feat: create array elements for ADD/REPLACE with filtered paths (@)
+* feat: implement SCIM-compliant error handling with proper status codes (@)
+* feat: initial implementation of SCIM Gateway (@)
+* feat: make port optional for embedded mode (@)
+* feat: optional UserReplacer/GroupReplacer plugin interfaces for true PUT semantics (@)
+* feat: support boolean-to-string comparison in SCIM filters (@)
+### Bug Fixes
+* fix: clean up CHANGELOG.md formatting and improve release automation (@)
+* fix: keep PluginGetter source-compatible, map opaque replace errors to 500 (@)
+* fix: preserve phase-specific legacy statuses in adapter replace fallback (@)
+* fix: support PATCH operations on filtered array sub-attributes (@)
+* fix: support SCIM enterprise extension attributes in PATCH operations (@)
+### Performance
+* perf(scim): optimize SortResources with value caching (@)
+* perf: add comprehensive performance benchmarks (@)
+### Refactoring
+* refactor: consolidate memory plugin and test infrastructure (@)
+* refactor: rename root package to scimgateway for consistency with module path (@)
+
+**Full Changelog**: https://github.com/marcelom97/scimgateway/compare/...v1.1.0
+
+[v1.1.0]: https://github.com/certifaction/scimgateway/releases/tag/v1.1.0
+
+
 ## [v1.0.0] - 2026-02-01
 
 
